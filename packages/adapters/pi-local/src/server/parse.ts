@@ -12,6 +12,9 @@ interface ParsedPiOutput {
     costUsd: number | null;
   };
   finalMessage: string | null;
+  /** Provider/model of the last assistant message that did not fail; differs from the configured model after a fallback. */
+  provider: string | null;
+  model: string | null;
   toolCalls: Array<{ toolCallId: string; toolName: string; args: unknown; result: string | null; isError: boolean }>;
 }
 
@@ -47,6 +50,8 @@ export function createPiJsonlParser() {
       costUsd: null,
     },
     finalMessage: null,
+    provider: null,
+    model: null,
     toolCalls: [],
   };
 
@@ -55,6 +60,11 @@ export function createPiJsonlParser() {
     if (typeof value === "number" && Number.isFinite(value) && value >= 0) result.usage.costUsd = (result.usage.costUsd ?? 0) + value;
     else missingCost = true;
   }
+  // Assistant-message failures stay provisional until the run ends: a later
+  // successful auto_retry_end or retry_fallback_succeeded (an in-run model
+  // fallback) means another attempt answered, so the failure no longer fails the run.
+  let provisionalErrors: string[] = [];
+  const recoveredErrors = new Set<string>();
   let currentToolCall: { toolCallId: string; toolName: string; args: unknown } | null = null;
 
   return (stdout: string) => {
@@ -78,7 +88,14 @@ export function createPiJsonlParser() {
         const message = asRecord(rawMessage);
         if (message?.role !== "assistant" || message.stopReason !== "error") continue;
         const error = asString(message.errorMessage, "").trim() || "Pi provider request failed.";
-        if (!result.errors.includes(error)) result.errors.push(error);
+        if (eventType === "agent_end" && recoveredErrors.has(error)) continue;
+        if (!provisionalErrors.includes(error) && !result.errors.includes(error)) provisionalErrors.push(error);
+      }
+
+      if ((eventType === "auto_retry_end" && event.success === true) || eventType === "retry_fallback_succeeded") {
+        for (const error of provisionalErrors) recoveredErrors.add(error);
+        provisionalErrors = [];
+        continue;
       }
 
       // RPC protocol messages - skip these (internal implementation detail)
@@ -126,6 +143,14 @@ export function createPiJsonlParser() {
           if (text) {
             result.finalMessage = text;
             result.messages.push(text);
+          }
+          if (message.role === "assistant" && message.stopReason !== "error") {
+            const provider = asString(message.provider, "").trim();
+            const model = asString(message.model, "").trim();
+            if (provider && model) {
+              result.provider = provider;
+              result.model = model;
+            }
           }
 
           // Extract usage and cost from assistant message
@@ -237,7 +262,10 @@ export function createPiJsonlParser() {
     }
 
     if (missingCost) result.usage.costUsd = null;
-    return { ...result, usage: { ...result.usage }, messages: [...result.messages], errors: [...result.errors], toolCalls: [...result.toolCalls] };
+    // Errors still provisional when this chunk ends are reported without being
+    // committed, so a recovery event in a later chunk can still supersede them.
+    const errors = [...result.errors, ...provisionalErrors.filter((error) => !result.errors.includes(error))];
+    return { ...result, usage: { ...result.usage }, messages: [...result.messages], errors, toolCalls: [...result.toolCalls] };
   };
 }
 
