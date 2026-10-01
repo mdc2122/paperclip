@@ -207,4 +207,63 @@ describe("pi_local execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("does not leak the server's PAPERCLIP_* secrets into the Pi child", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-env-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "pi");
+    const envDumpPath = path.join(root, "captured-env.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(commandPath, `#!/usr/bin/env node
+if (process.argv.includes("--list-models")) {
+  console.log("provider  model");
+  console.log("google    gemini-3-flash-preview");
+  process.exit(0);
+}
+require("node:fs").writeFileSync(${JSON.stringify(envDumpPath)}, JSON.stringify(process.env));
+console.log(JSON.stringify({ type: "agent_start" }));
+console.log(JSON.stringify({ type: "turn_end", message: { role: "assistant", content: "" }, toolResults: [] }));
+console.log(JSON.stringify({ type: "agent_end", messages: [] }));
+`, "utf8");
+    await fs.chmod(commandPath, 0o755);
+
+    const serverSecrets = {
+      PAPERCLIP_AGENT_JWT_SECRET: "server-jwt-secret",
+      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "server-tool-action-secret",
+      PAPERCLIP_SECRETS_MASTER_KEY_FILE: "/server/master.key",
+    };
+    const previous = { HOME: process.env.HOME, ...Object.fromEntries(Object.keys(serverSecrets).map((k) => [k, process.env[k]])) };
+    process.env.HOME = root;
+    Object.assign(process.env, serverSecrets);
+
+    try {
+      await execute({
+        runId: "run-pi-env-leak",
+        agent: { id: "agent-env", companyId: "company-env", name: "Pi Agent", adapterType: "pi_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "google/gemini-3-flash-preview",
+          promptTemplate: "Keep working.",
+          env: { AGENT_SETTING: "kept" },
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      const childEnv = JSON.parse(await fs.readFile(envDumpPath, "utf8")) as Record<string, string>;
+      for (const key of Object.keys(serverSecrets)) expect(childEnv).not.toHaveProperty(key);
+      expect(childEnv.AGENT_SETTING).toBe("kept");
+      expect(childEnv.PAPERCLIP_AGENT_ID).toBe("agent-env");
+      expect(childEnv.PAPERCLIP_API_KEY).toBe("run-jwt-token");
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
