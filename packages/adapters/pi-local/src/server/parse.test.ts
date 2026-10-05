@@ -319,6 +319,21 @@ describe("terminal provider failures", () => {
     expect({ provider: parsed.provider, model: parsed.model }).toEqual({ provider: "cursor", model: "claude-opus-5-5" });
   });
 
+  it("does not fail a run whose failed attempt a successful auto-retry recovered", () => {
+    const failed = { role: "assistant", provider: "google", model: "gemini-3-flash-preview", stopReason: "error", errorMessage: "429 RESOURCE_EXHAUSTED" };
+    const answered = { role: "assistant", provider: "google", model: "gemini-3-flash-preview", content: "done", stopReason: "stop" };
+    const parsed = parsePiJsonl([
+      { type: "message_end", message: failed },
+      { type: "turn_end", message: failed },
+      { type: "auto_retry_start", attempt: 1, errorMessage: failed.errorMessage },
+      { type: "turn_end", message: answered },
+      { type: "auto_retry_end", success: true, attempt: 1 },
+      { type: "agent_end", messages: [failed, answered] },
+    ].map(event => JSON.stringify(event)).join("\n"));
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.finalMessage).toBe("done");
+  });
+
   it("still fails when every fallback attempt failed", () => {
     const first = { role: "assistant", provider: "cliproxy", model: "opus", stopReason: "error", errorMessage: "timed out" };
     const second = { role: "assistant", provider: "cursor", model: "opus", stopReason: "error", errorMessage: "ERROR_NOT_LOGGED_IN" };
