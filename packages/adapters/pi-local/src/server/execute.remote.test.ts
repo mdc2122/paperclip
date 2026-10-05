@@ -664,6 +664,27 @@ describe("pi remote execution", () => {
     expect(userPrompt).not.toContain("You are agent agent-1 (Pi Builder).");
   });
 
+  it("passes configured tools to --tools and keeps the default list when tools is unset", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-tools-"));
+    cleanupDirs.push(rootDir);
+    const toolsArgFor = async (config: Record<string, unknown>) => {
+      await execute({
+        runId: "run-tools",
+        agent: { id: "agent-1", companyId: "company-1", name: "Pi Builder", adapterType: "pi_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command: "pi", model: "openai/gpt-5.4-mini", cwd: rootDir, ...config },
+        context: {},
+        onLog: async () => {},
+      } as never);
+      const call = runChildProcess.mock.calls.at(-1) as unknown as [string, string, string[]] | undefined;
+      const args = call?.[2] ?? [];
+      return args[args.indexOf("--tools") + 1];
+    };
+
+    expect(await toolsArgFor({ tools: [" read ", "bash", "", "lsp"] })).toBe("read,bash,lsp");
+    expect(await toolsArgFor({})).toBe("read,bash,edit,write,grep,find,ls");
+  });
+
   it("preserves custom prompt templates in both configured carriers", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-custom-policy-"));
     cleanupDirs.push(rootDir);
