@@ -291,11 +291,11 @@ describe("terminal provider failures", () => {
   it("does not fail a run whose failed attempt a model fallback recovered", () => {
     const failed = {
       role: "assistant",
-      provider: "cliproxy",
-      model: "opus",
+      provider: "provider-a",
+      model: "model-a",
       content: [],
       stopReason: "error",
-      errorMessage: "400 unknown provider for model opus",
+      errorMessage: "400 unknown provider for model model-a",
     };
     const answered = {
       role: "assistant",
@@ -307,7 +307,7 @@ describe("terminal provider failures", () => {
     const parsed = parsePiJsonl([
       { type: "message_end", message: failed },
       { type: "turn_end", message: failed },
-      { type: "retry_fallback_applied", from: "cliproxy/opus", to: "cursor/claude-opus-5-5" },
+      { type: "retry_fallback_applied", from: "provider-a/model-a", to: "cursor/claude-opus-5-5" },
       { type: "auto_retry_start", attempt: 1, errorMessage: failed.errorMessage },
       { type: "message_end", message: answered },
       { type: "retry_fallback_succeeded", model: "cursor/claude-opus-5-5" },
@@ -336,8 +336,8 @@ describe("terminal provider failures", () => {
 
   it("splits usage and cost by the provider that billed each turn", () => {
     const usage = (input: number, output: number, cost: number) => ({ input, output, cacheRead: 0, cost: { total: cost } });
-    const first = { role: "assistant", provider: "cliproxy", model: "opus", content: "step", stopReason: "toolUse", usage: usage(100, 10, 0.3) };
-    const failed = { role: "assistant", provider: "cliproxy", model: "opus", stopReason: "error", errorMessage: "timed out", usage: usage(50, 0, 0.1) };
+    const first = { role: "assistant", provider: "provider-a", model: "model-a", content: "step", stopReason: "toolUse", usage: usage(100, 10, 0.3) };
+    const failed = { role: "assistant", provider: "provider-a", model: "model-a", stopReason: "error", errorMessage: "timed out", usage: usage(50, 0, 0.1) };
     const answered = { role: "assistant", provider: "cursor", model: "opus", content: "done", stopReason: "stop", usage: usage(200, 20, 0.6) };
     const parsed = parsePiJsonl([
       { type: "turn_end", message: first },
@@ -349,17 +349,17 @@ describe("terminal provider failures", () => {
     expect(parsed.usage.costUsd).toBeCloseTo(1.0);
     expect(parsed.billedUsage.map(({ provider, model, inputTokens, outputTokens, costUsd }) =>
       ({ provider, model, inputTokens, outputTokens, costUsd: Number(costUsd.toFixed(6)) }))).toEqual([
-      { provider: "cliproxy", model: "opus", inputTokens: 150, outputTokens: 10, costUsd: 0.4 },
+      { provider: "provider-a", model: "model-a", inputTokens: 150, outputTokens: 10, costUsd: 0.4 },
       { provider: "cursor", model: "opus", inputTokens: 200, outputTokens: 20, costUsd: 0.6 },
     ]);
   });
 
   it("still fails when every fallback attempt failed", () => {
-    const first = { role: "assistant", provider: "cliproxy", model: "opus", stopReason: "error", errorMessage: "timed out" };
+    const first = { role: "assistant", provider: "provider-a", model: "model-a", stopReason: "error", errorMessage: "timed out" };
     const second = { role: "assistant", provider: "cursor", model: "opus", stopReason: "error", errorMessage: "ERROR_NOT_LOGGED_IN" };
     const parsed = parsePiJsonl([
       { type: "turn_end", message: first },
-      { type: "retry_fallback_applied", from: "cliproxy/opus", to: "cursor/opus" },
+      { type: "retry_fallback_applied", from: "provider-a/model-a", to: "cursor/opus" },
       { type: "turn_end", message: second },
       { type: "auto_retry_end", success: false, finalError: "ERROR_NOT_LOGGED_IN" },
       { type: "agent_end", messages: [second] },
@@ -369,7 +369,7 @@ describe("terminal provider failures", () => {
   });
 
   it("fails on an error that follows a recovered fallback", () => {
-    const failed = { role: "assistant", provider: "cliproxy", model: "opus", stopReason: "error", errorMessage: "timed out" };
+    const failed = { role: "assistant", provider: "provider-a", model: "model-a", stopReason: "error", errorMessage: "timed out" };
     const answered = { role: "assistant", provider: "cursor", model: "opus", content: "ok", stopReason: "stop" };
     const later = { role: "assistant", provider: "cursor", model: "opus", stopReason: "error", errorMessage: "context limit" };
     const parsed = parsePiJsonl([
