@@ -1,6 +1,16 @@
 import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
 
-interface ParsedPiOutput {
+/** Usage billed to one provider/model; provider/model are null for usage the CLI reported without them. */
+export interface PiBilledUsage {
+  provider: string | null;
+  model: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  costUsd: number;
+}
+
+export interface ParsedPiOutput {
   sawAgentEnd: boolean;
   sessionId: string | null;
   messages: string[];
@@ -15,6 +25,8 @@ interface ParsedPiOutput {
   /** Provider/model of the last assistant message that did not fail; differs from the configured model after a fallback. */
   provider: string | null;
   model: string | null;
+  /** Run usage split by the provider/model each turn was billed to; sums to `usage`. Provider/model are null for usage reported without them. */
+  billedUsage: PiBilledUsage[];
   toolCalls: Array<{ toolCallId: string; toolName: string; args: unknown; result: string | null; isError: boolean }>;
 }
 
@@ -52,6 +64,7 @@ export function createPiJsonlParser() {
     finalMessage: null,
     provider: null,
     model: null,
+    billedUsage: [],
     toolCalls: [],
   };
 
@@ -59,6 +72,21 @@ export function createPiJsonlParser() {
   function addCost(value: unknown) {
     if (typeof value === "number" && Number.isFinite(value) && value >= 0) result.usage.costUsd = (result.usage.costUsd ?? 0) + value;
     else missingCost = true;
+  }
+  function addUsage(provider: string | null, model: string | null, usage: Omit<PiBilledUsage, "provider" | "model" | "costUsd">, cost: unknown) {
+    result.usage.inputTokens += usage.inputTokens;
+    result.usage.outputTokens += usage.outputTokens;
+    result.usage.cachedInputTokens += usage.cachedInputTokens;
+    addCost(cost);
+    let entry = result.billedUsage.find((candidate) => candidate.provider === provider && candidate.model === model);
+    if (!entry) {
+      entry = { provider, model, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, costUsd: 0 };
+      result.billedUsage.push(entry);
+    }
+    entry.inputTokens += usage.inputTokens;
+    entry.outputTokens += usage.outputTokens;
+    entry.cachedInputTokens += usage.cachedInputTokens;
+    if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) entry.costUsd += cost;
   }
   // Assistant-message failures stay provisional until the run ends: a later
   // successful auto_retry_end or retry_fallback_succeeded (an in-run model
@@ -153,16 +181,19 @@ export function createPiJsonlParser() {
             }
           }
 
-          // Extract usage and cost from assistant message
+          // Extract usage and cost from assistant message, billed to the provider/model
+          // that produced it (a failed fallback attempt can still be billed).
           const usage = asRecord(message.usage);
           if (usage) {
-            result.usage.inputTokens += asNumber(usage.input, 0) + asNumber(usage.cacheWrite, 0);
-            result.usage.outputTokens += asNumber(usage.output, 0);
-            result.usage.cachedInputTokens += asNumber(usage.cacheRead, 0);
-
+            const provider = asString(message.provider, "").trim();
+            const model = asString(message.model, "").trim();
             // Pi stores cost in usage.cost.total (and broken down in usage.cost.input, etc.)
             const cost = asRecord(usage.cost);
-            addCost(cost?.total);
+            addUsage(provider && model ? provider : null, provider && model ? model : null, {
+              inputTokens: asNumber(usage.input, 0) + asNumber(usage.cacheWrite, 0),
+              outputTokens: asNumber(usage.output, 0),
+              cachedInputTokens: asNumber(usage.cacheRead, 0),
+            }, cost?.total);
           }
         }
 
@@ -250,13 +281,13 @@ export function createPiJsonlParser() {
         const usage = asRecord(event.usage);
         if (usage) {
           // Support both Pi format (input/output/cacheRead) and generic format (inputTokens/outputTokens/cachedInputTokens)
-          result.usage.inputTokens += asNumber(usage.inputTokens ?? usage.input, 0) + asNumber(usage.cacheWrite, 0);
-          result.usage.outputTokens += asNumber(usage.outputTokens ?? usage.output, 0);
-          result.usage.cachedInputTokens += asNumber(usage.cachedInputTokens ?? usage.cacheRead, 0);
-
           // Cost may be in usage.costUsd (direct) or usage.cost.total (Pi format)
           const cost = asRecord(usage.cost);
-          addCost(cost?.total ?? usage.costUsd);
+          addUsage(null, null, {
+            inputTokens: asNumber(usage.inputTokens ?? usage.input, 0) + asNumber(usage.cacheWrite, 0),
+            outputTokens: asNumber(usage.outputTokens ?? usage.output, 0),
+            cachedInputTokens: asNumber(usage.cachedInputTokens ?? usage.cacheRead, 0),
+          }, cost?.total ?? usage.costUsd);
         }
       }
     }
@@ -265,7 +296,14 @@ export function createPiJsonlParser() {
     // Errors still provisional when this chunk ends are reported without being
     // committed, so a recovery event in a later chunk can still supersede them.
     const errors = [...result.errors, ...provisionalErrors.filter((error) => !result.errors.includes(error))];
-    return { ...result, usage: { ...result.usage }, messages: [...result.messages], errors, toolCalls: [...result.toolCalls] };
+    return {
+      ...result,
+      usage: { ...result.usage },
+      messages: [...result.messages],
+      errors,
+      billedUsage: result.billedUsage.map((entry) => ({ ...entry })),
+      toolCalls: [...result.toolCalls],
+    };
   };
 }
 

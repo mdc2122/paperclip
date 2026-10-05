@@ -334,6 +334,26 @@ describe("terminal provider failures", () => {
     expect(parsed.finalMessage).toBe("done");
   });
 
+  it("splits usage and cost by the provider that billed each turn", () => {
+    const usage = (input: number, output: number, cost: number) => ({ input, output, cacheRead: 0, cost: { total: cost } });
+    const first = { role: "assistant", provider: "cliproxy", model: "opus", content: "step", stopReason: "toolUse", usage: usage(100, 10, 0.3) };
+    const failed = { role: "assistant", provider: "cliproxy", model: "opus", stopReason: "error", errorMessage: "timed out", usage: usage(50, 0, 0.1) };
+    const answered = { role: "assistant", provider: "cursor", model: "opus", content: "done", stopReason: "stop", usage: usage(200, 20, 0.6) };
+    const parsed = parsePiJsonl([
+      { type: "turn_end", message: first },
+      { type: "turn_end", message: failed },
+      { type: "retry_fallback_succeeded", model: "cursor/opus" },
+      { type: "turn_end", message: answered },
+    ].map(event => JSON.stringify(event)).join("\n"));
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.usage.costUsd).toBeCloseTo(1.0);
+    expect(parsed.billedUsage.map(({ provider, model, inputTokens, outputTokens, costUsd }) =>
+      ({ provider, model, inputTokens, outputTokens, costUsd: Number(costUsd.toFixed(6)) }))).toEqual([
+      { provider: "cliproxy", model: "opus", inputTokens: 150, outputTokens: 10, costUsd: 0.4 },
+      { provider: "cursor", model: "opus", inputTokens: 200, outputTokens: 20, costUsd: 0.6 },
+    ]);
+  });
+
   it("still fails when every fallback attempt failed", () => {
     const first = { role: "assistant", provider: "cliproxy", model: "opus", stopReason: "error", errorMessage: "timed out" };
     const second = { role: "assistant", provider: "cursor", model: "opus", stopReason: "error", errorMessage: "ERROR_NOT_LOGGED_IN" };

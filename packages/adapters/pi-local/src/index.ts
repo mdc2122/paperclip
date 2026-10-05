@@ -39,6 +39,6 @@ Notes:
 - Paperclip requires an explicit \`model\` value for \`pi_local\` agents.
 - Sessions are stored in ~/.pi/paperclips/ and resumed with --session.
 - All tools (read, bash, edit, write, grep, find, ls) are enabled by default; set \`tools\` for a Pi-compatible CLI with a different tool set.
-- When the CLI answers through an in-run model fallback, the run records the provider/model that answered, and a failure superseded by a successful retry or fallback does not fail the run.
+- When the CLI answers through an in-run model fallback, the run records the provider/model that answered, cost is recorded per provider/model that billed a turn, and a failure superseded by a successful retry or fallback does not fail the run.
 - Agent instructions are appended to Pi's system prompt via --append-system-prompt, while the user task is sent via -p.
 `;
