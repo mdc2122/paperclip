@@ -685,6 +685,48 @@ describe("pi remote execution", () => {
     expect(await toolsArgFor({})).toBe("read,bash,edit,write,grep,find,ls");
   });
 
+  it("charges a billed failed attempt to its own provider when the answering fallback billed nothing", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-fallback-billing-"));
+    cleanupDirs.push(rootDir);
+    const failed = { role: "assistant", provider: "provider-a", model: "model-a", stopReason: "error", errorMessage: "timed out",
+      usage: { input: 300, output: 20, cacheRead: 0, cost: { total: 0.05 } } };
+    const answered = { role: "assistant", provider: "provider-b", model: "model-b", content: "done", stopReason: "stop",
+      usage: { input: 0, output: 0, cacheRead: 0, cost: { total: 0 } } };
+    const stdout = [
+      { type: "turn_end", message: failed },
+      { type: "retry_fallback_succeeded", model: "provider-b/model-b" },
+      { type: "turn_end", message: answered },
+      { type: "agent_end", messages: [failed, answered] },
+    ].map((event) => JSON.stringify(event)).join("\n") + "\n";
+    runChildProcess.mockImplementationOnce((async (_runId: string, _command: string, _args: string[], options: { onLog: (stream: "stdout", chunk: string) => Promise<void> }) => {
+      await options.onLog("stdout", stdout);
+      return { exitCode: 0, signal: null, timedOut: false, stdout, stderr: "", pid: 123, startedAt: new Date().toISOString() };
+    }) as never);
+    const onUsage = vi.fn(async () => {});
+
+    const result = await execute({
+      runId: "run-fallback-billing",
+      agent: { id: "agent-1", companyId: "company-1", name: "Pi Builder", adapterType: "pi_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "pi", model: "openai/gpt-5.4-mini", cwd: rootDir },
+      context: {},
+      onLog: async () => {},
+      onUsage,
+    } as never);
+
+    const billing = {
+      provider: "provider-b",
+      model: "provider-b/model-b",
+      costUsd: 0.05,
+      usageByModel: [
+        { provider: "provider-a", biller: "provider-a", model: "provider-a/model-a", usage: { inputTokens: 300, outputTokens: 20, cachedInputTokens: 0 }, costUsd: 0.05 },
+        { provider: "provider-b", biller: "provider-b", model: "provider-b/model-b", usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 }, costUsd: 0 },
+      ],
+    };
+    expect(result).toMatchObject({ exitCode: 0, errorMessage: null, ...billing });
+    expect((onUsage.mock.calls.at(-1) as unknown[] | undefined)?.[0]).toMatchObject({ complete: true, ...billing });
+  });
+
   it("preserves custom prompt templates in both configured carriers", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-custom-policy-"));
     cleanupDirs.push(rootDir);
