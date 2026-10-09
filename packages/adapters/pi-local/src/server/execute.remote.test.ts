@@ -685,7 +685,7 @@ describe("pi remote execution", () => {
     expect(await toolsArgFor({})).toBe("read,bash,edit,write,grep,find,ls");
   });
 
-  it("charges a billed failed attempt to its own provider when the answering fallback billed nothing", async () => {
+  it("charges a billed failed attempt to its own provider and keeps the answering model after stdout truncation", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-fallback-billing-"));
     cleanupDirs.push(rootDir);
     const failed = { role: "assistant", provider: "provider-a", model: "model-a", stopReason: "error", errorMessage: "timed out",
@@ -698,9 +698,11 @@ describe("pi remote execution", () => {
       { type: "turn_end", message: answered },
       { type: "agent_end", messages: [failed, answered] },
     ].map((event) => JSON.stringify(event)).join("\n") + "\n";
+    // The transport caps proc.stdout to a tail; only the streamed log carries every turn.
+    const tail = `${JSON.stringify({ type: "agent_end", messages: [] })}\n`;
     runChildProcess.mockImplementationOnce((async (_runId: string, _command: string, _args: string[], options: { onLog: (stream: "stdout", chunk: string) => Promise<void> }) => {
       await options.onLog("stdout", stdout);
-      return { exitCode: 0, signal: null, timedOut: false, stdout, stderr: "", pid: 123, startedAt: new Date().toISOString() };
+      return { exitCode: 0, signal: null, timedOut: false, stdout: tail, stderr: "", pid: 123, startedAt: new Date().toISOString() };
     }) as never);
     const onUsage = vi.fn(async () => {});
 

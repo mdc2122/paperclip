@@ -807,14 +807,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await onLog("stdout", stdoutBuffer);
       }
 
-      // Display output is capped by the process transport. Keep accounting
-      // from the full stream, including when no checkpoint callback is installed.
+      // Display output is capped by the process transport. Keep accounting and the
+      // provider/model that answered from the full stream, including when no
+      // checkpoint callback is installed.
       const parsed = parsePiJsonl(proc.stdout);
       if (hasAccounting) {
         const retained = consumeAccounting("");
         parsed.usage = retained.usage;
         parsed.billedUsage = retained.billedUsage;
         parsed.sawAgentEnd = retained.sawAgentEnd;
+        parsed.provider = retained.provider;
+        parsed.model = retained.model;
       }
       return { proc, rawStderr: proc.stderr, parsed };
     };
